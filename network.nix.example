@@ -1,0 +1,94 @@
+# NetworkManager profiles with sops-nix secrets
+# Uses nm2nix format: https://github.com/janik-haag/nm2nix
+#
+# Copy this file to network.nix and customize for your setup.
+# You'll need to:
+# 1. Update WiFi SSIDs and create corresponding secrets
+# 2. Configure WireGuard with your own keys/endpoints
+# 3. Generate new UUIDs for each connection
+{config, ...}: {
+  sops.secrets = {
+    # WiFi passwords - create these in your secrets.yaml
+    "HOME_WIFI_PSK" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+    # WireGuard private key
+    "WG_PRIVATE_KEY" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+  };
+
+  networking.networkmanager = {
+    enable = true;
+    ensureProfiles = {
+      environmentFiles = [
+        config.sops.secrets.HOME_WIFI_PSK.path
+        config.sops.secrets.WG_PRIVATE_KEY.path
+      ];
+
+      profiles = {
+        # Example WiFi network
+        HomeWifi = {
+          connection = {
+            id = "HomeWifi";
+            interface-name = "wlp1s0"; # Update for your interface
+            type = "wifi";
+            uuid = "00000000-0000-0000-0000-000000000001"; # Generate with: uuidgen
+          };
+          ipv4.method = "auto";
+          ipv6 = {
+            addr-gen-mode = "default";
+            method = "auto";
+          };
+          proxy = {};
+          wifi = {
+            mode = "infrastructure";
+            ssid = "YourSSID";
+          };
+          wifi-security = {
+            auth-alg = "open";
+            key-mgmt = "wpa-psk";
+            psk = "$HOME_WIFI_PSK";
+          };
+        };
+
+        # Example WireGuard VPN
+        # See: https://wiki.nixos.org/wiki/WireGuard
+        MyVPN = {
+          connection = {
+            autoconnect = "false";
+            id = "MyVPN";
+            interface-name = "wg0";
+            permissions = "user:user:;";
+            type = "wireguard";
+            uuid = "00000000-0000-0000-0000-000000000002"; # Generate with: uuidgen
+          };
+          ipv4 = {
+            address1 = "10.0.0.2/32"; # Your VPN client IP
+            dns = "10.0.0.1;";
+            dns-search = "~;";
+            method = "manual";
+          };
+          ipv6 = {
+            addr-gen-mode = "default";
+            method = "disabled"; # Or configure IPv6 if needed
+          };
+          proxy = {};
+          wireguard = {
+            listen-port = "51820";
+            private-key = "$WG_PRIVATE_KEY";
+          };
+          # Replace with your server's public key
+          "wireguard-peer.YOUR_SERVER_PUBLIC_KEY=" = {
+            allowed-ips = "0.0.0.0/0;::/0;";
+            endpoint = "vpn.example.com:51820";
+          };
+        };
+      };
+    };
+  };
+}
