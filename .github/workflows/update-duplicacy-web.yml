@@ -1,0 +1,129 @@
+name: Update Duplicacy Web
+
+on:
+  schedule:
+    # Run weekly on Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-duplicacy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get current version
+        id: current_version
+        run: |
+          CURRENT_VERSION=$(grep 'version = ' packages/package-duplicacy.nix | sed 's/.*version = "\(.*\)".*/\1/')
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+
+      - name: Check for latest version
+        id: latest_version
+        run: |
+          # Fetch the download page and extract the latest version
+          # Duplicacy uses versioned URLs like duplicacy_web_linux_x64_1.8.3
+          LATEST_VERSION=$(curl -sL "https://duplicacy.com/download.html" | \
+            grep -oE 'duplicacy_web_linux_x64_[0-9]+\.[0-9]+\.[0-9]+' | \
+            sed 's/duplicacy_web_linux_x64_//' | \
+            head -1 || echo "")
+
+          if [ -z "$LATEST_VERSION" ]; then
+            # Fallback: try incrementing minor version and check if URL exists
+            CURRENT="${{ steps.current_version.outputs.version }}"
+            MAJOR=$(echo $CURRENT | cut -d. -f1)
+            MINOR=$(echo $CURRENT | cut -d. -f2)
+            PATCH=$(echo $CURRENT | cut -d. -f3)
+
+            # Try next patch version
+            NEXT_PATCH=$((PATCH + 1))
+            TEST_URL="https://acrosync.com/duplicacy-web/duplicacy_web_linux_x64_${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            if curl --output /dev/null --silent --head --fail "$TEST_URL"; then
+              LATEST_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            else
+              # Try next minor version
+              NEXT_MINOR=$((MINOR + 1))
+              TEST_URL="https://acrosync.com/duplicacy-web/duplicacy_web_linux_x64_${MAJOR}.${NEXT_MINOR}.0"
+              if curl --output /dev/null --silent --head --fail "$TEST_URL"; then
+                LATEST_VERSION="${MAJOR}.${NEXT_MINOR}.0"
+              else
+                LATEST_VERSION="$CURRENT"
+              fi
+            fi
+          fi
+
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "Latest version: $LATEST_VERSION"
+
+      - name: Check if update needed
+        id: check_update
+        run: |
+          if [ "${{ steps.current_version.outputs.version }}" != "${{ steps.latest_version.outputs.version }}" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "Update needed: ${{ steps.current_version.outputs.version }} -> ${{ steps.latest_version.outputs.version }}"
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "No update needed"
+          fi
+
+      - name: Download and hash new version
+        if: steps.check_update.outputs.update_needed == 'true'
+        id: new_hash
+        run: |
+          VERSION="${{ steps.latest_version.outputs.version }}"
+          URL="https://acrosync.com/duplicacy-web/duplicacy_web_linux_x64_${VERSION}"
+
+          echo "Downloading from: $URL"
+          curl -L -o duplicacy_web "$URL"
+
+          # Calculate SHA256 hash
+          HASH=$(sha256sum duplicacy_web | cut -d' ' -f1)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "SHA256: $HASH"
+
+      - name: Update package-duplicacy.nix
+        if: steps.check_update.outputs.update_needed == 'true'
+        run: |
+          NEW_VERSION="${{ steps.latest_version.outputs.version }}"
+          NEW_HASH="${{ steps.new_hash.outputs.hash }}"
+
+          sed -i "s/version = \".*\"/version = \"${NEW_VERSION}\"/" packages/package-duplicacy.nix
+          sed -i "s/sha256 = \".*\"/sha256 = \"${NEW_HASH}\"/" packages/package-duplicacy.nix
+
+          echo "Updated package-duplicacy.nix:"
+          cat packages/package-duplicacy.nix
+
+      - name: Create Pull Request
+        if: steps.check_update.outputs.update_needed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(duplicacy): update to v${{ steps.latest_version.outputs.version }}'
+          title: 'chore(duplicacy): update duplicacy-web to v${{ steps.latest_version.outputs.version }}'
+          body: |
+            ## Automated Duplicacy Web Update
+
+            This PR updates duplicacy-web from `${{ steps.current_version.outputs.version }}` to `${{ steps.latest_version.outputs.version }}`.
+
+            ### Changes
+            - Updated version in `packages/package-duplicacy.nix`
+            - Updated SHA256 hash for the new binary
+
+            ### Verification
+            - [ ] Verify the hash matches the official release
+            - [ ] Test locally with `nixos-rebuild build --flake .`
+            - [ ] Check duplicacy-web service starts correctly
+
+            ---
+            *This PR was created automatically by the [update-duplicacy-web](.github/workflows/update-duplicacy-web.yml) workflow.*
+          branch: automated/update-duplicacy-web
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
