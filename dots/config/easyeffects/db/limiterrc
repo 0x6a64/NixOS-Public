@@ -1,0 +1,4 @@
+[soe][Limiter#0]
+attack=2
+lookahead=4
+release=8

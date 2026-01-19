@@ -1,0 +1,58 @@
+# This is an EXAMPLE workflow - it will NOT run (if: false)
+# Shows how sanitized content is published to public repo
+#
+# Real workflow in private repo:
+# 1. Triggers when public-staging branch is updated (PR merge)
+# 2. Checks out public-staging content
+# 3. Creates orphan branch (no git history)
+# 4. Removes sync/publish workflows (keeps update workflows as examples)
+# 5. Force-pushes orphan commit to public repository
+
+name: Publish to Public Repository (EXAMPLE)
+
+on:
+  push:
+    branches:
+      - public-staging
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: false  # NEVER RUN - This is just an example
+    steps:
+      - name: Checkout sanitized content
+        uses: actions/checkout@v4
+        with:
+          ref: public-staging
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create orphan commit (no history)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create fresh orphan branch - breaks all git history
+          git checkout --orphan temp-publish
+
+          # Remove sensitive workflow files (keep update workflows)
+          rm -f .github/workflows/sync-to-public.yml
+          rm -f .github/workflows/publish-to-public.yml
+          rm -rf .github/scripts
+
+          # Commit all files as single orphan commit
+          git add -A
+          git commit -m "Sanitized NixOS configuration snapshot"
+
+      - name: Push to public repository
+        run: |
+          # Configure credentials for public repo
+          git config --global credential.helper store
+          echo "https://x-access-token:$PUBLIC_REPO_PAT@github.com" > ~/.git-credentials
+
+          # Add public repo remote
+          git remote add public https://github.com/your-username/YourPublicRepo.git
+
+          # Force push orphan commit (replaces all history)
+          git push public temp-publish:main --force
