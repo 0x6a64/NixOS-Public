@@ -1,0 +1,104 @@
+# This is an EXAMPLE workflow - it will NOT run (if: false)
+# Shows the pattern used to sanitize private config for public sharing
+#
+# Real workflow in private repo:
+# 1. Creates branch from public-staging with current files
+# 2. Removes sensitive files (network.nix, secrets/, .claude)
+# 3. Creates template files (.sops.yaml.example, network.nix.example)
+# 4. Runs sanitization (replaces usernames, emails, hostnames, etc.)
+# 5. Creates PR to public-staging for review
+# 6. After PR merge, publish workflow auto-triggers
+
+name: Sync to Public Repository (EXAMPLE)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sanitize-and-stage:
+    runs-on: ubuntu-latest
+    if: false  # NEVER RUN - This is just an example
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create sanitized branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="sync/public-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH" origin/public-staging
+
+          # Replace current content with main branch content
+          git rm -rf . || true
+          git checkout main -- .
+
+      - name: Remove sensitive files
+        run: |
+          # Remove files that should never be public
+          rm -f network.nix
+          rm -rf secrets
+          rm -rf .claude
+          rm -f CLAUDE.md
+          rm -f .github/workflows/sync-to-public.yml
+
+      - name: Create template files
+        run: |
+          # Create sanitized example files
+          cat > network.nix.example << 'TEMPLATE'
+          # Example network configuration
+          {config, ...}: {
+            networking.networkmanager = {
+              enable = true;
+              ensureProfiles = {
+                profiles = {
+                  HomeWifi = {
+                    connection = {
+                      id = "HomeWifi";
+                      type = "wifi";
+                      uuid = "00000000-0000-0000-0000-000000000001";
+                    };
+                    wifi.ssid = "YourSSID";
+                  };
+                };
+              };
+            };
+          }
+          TEMPLATE
+
+      - name: Sanitize personal information
+        run: |
+          # Replace identifying information with generic placeholders
+          find . -type f \( -name "*.nix" -o -name "*.sh" -o -name "*.md" \) | while read -r file; do
+            # Username
+            sed -i 's/username = "john"/username = "user"/g' "$file"
+            sed -i 's/\/home\/john/\/home\/user/g' "$file"
+
+            # Email
+            sed -i 's/john@example\.com/user@example.com/g' "$file"
+
+            # ... (many more patterns in real workflow)
+          done
+
+      - name: Create PR for review
+        env:
+          GH_TOKEN: $GITHUB_TOKEN
+        run: |
+          git add -A
+          git commit -m "Sanitize for public repo"
+          git push -u origin HEAD
+
+          gh pr create \
+            --base public-staging \
+            --title "Review: Sanitized content" \
+            --body "Review sanitized changes before publishing"
