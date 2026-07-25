@@ -1,0 +1,453 @@
+{
+  inputs,
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
+  imports = [
+    ./disko.nix
+    ./hardware-configuration.nix
+    ./impermanence.nix
+    ./network.nix
+    ./packages/duplicacy-web.nix
+    ./stylix.nix
+    ./de
+  ];
+
+  # Desktop environment selector; de/*.nix and home-manager modules key off this
+  gearhead.desktop = "gnome";
+
+  boot.initrd.luks.devices = {
+    cryptroot = {
+      device = "/dev/disk/by-partlabel/luks";
+      allowDiscards = true;
+    };
+  };
+
+  # Bootloader
+  boot.loader.efi.canTouchEfiVariables = true;
+  boot.initrd.systemd.enable = true;
+
+  # Lanzaboote doesn't work for initial install bc key bundle doesn't exist yet.
+  # BEGIN_NIXOS_BOOT_SYSTEMD_BOOT
+  # boot.loader.systemd-boot = {
+  # enable = true;
+  # consoleMode = lib.mkDefault "max";
+  # };
+  # END_NIXOS_BOOT_SYSTEMD_BOOT
+
+  # Secure Boot with Lanzaboote
+  # BEGIN_NIXOS_BOOT_LANZABOOTE
+  boot.loader.systemd-boot.enable = lib.mkForce false;
+  boot.loader.systemd-boot.consoleMode = lib.mkDefault "max";
+  boot.lanzaboote = {
+    enable = true;
+    pkiBundle = "/var/lib/sbctl";
+  };
+  # END_NIXOS_BOOT_LANZABOOTE
+
+  # LTS kernel: mainline latest hit a TTM LRU list_del corruption (see CLAUDE.md)
+  boot.kernelPackages = pkgs.linuxPackages;
+
+  # Plymouth is disabled; uncomment to enable and configure a theme
+  # boot.plymouth.theme = "cuts_alt";
+  # boot.plymouth.themePackages = with pkgs; [
+  #   # By default we would install all themes
+  #   # Check for options https://github.com/NixOS/nixpkgs/blob/7241bcbb4f099a66aafca120d37c65e8dda32717/pkgs/by-name/ad/adi1090x-plymouth-themes/shas.nix
+  #   (adi1090x-plymouth-themes.override {
+  #     selected_themes = [ "cuts_alt" ];
+  #   })
+  # ];
+
+  # Enable "Silent boot"
+  boot.consoleLogLevel = 3;
+  # boot.initrd.verbose = true;  # Show detailed boot messages
+  boot.kernelParams = [
+    "quiet"
+    "boot.shell_on_fail"
+    "udev.log_priority=3"
+    "rd.systemd.show_status=true"
+  ];
+
+  # Nix Settings
+  nix.settings = {
+    experimental-features = ["nix-command" "flakes"];
+    accept-flake-config = true;
+    netrc-file = config.sops.templates."github-netrc".path;
+    warn-dirty = false;
+    # Trust these caches at the system level so the daemon uses them for any
+    # user (john isn't a trusted-user, so the flake's nixConfig is ignored).
+    substituters = [
+      "https://cache.nixos.org"
+      "https://nix-community.cachix.org"
+      "https://cache.numtide.com"
+    ];
+    trusted-public-keys = [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
+    ];
+  };
+
+  # nh: nicer rebuild UX (nix-output-monitor progress + closure diff).
+  # NH_FLAKE points commands at this flake; aliases live in home.nix.
+  programs.nh = {
+    enable = true;
+    flake = "/home/user/Nixos";
+    # Weekly GC via systemd timer; replaces nix.gc.automatic (they conflict).
+    # Keeps at least 5 generations and anything from the last 3 days.
+    clean = {
+      enable = true;
+      dates = "weekly";
+      extraArgs = "--keep 5 --keep-since 3d";
+    };
+  };
+
+  # Scheduled dedup avoids per-build slowdown from auto-optimise-store
+  nix.optimise.automatic = true;
+
+  # Pin the flake registry and legacy <nixpkgs> to this system's locked nixpkgs
+  nix.registry.nixpkgs.flake = inputs.nixpkgs;
+  nix.nixPath = ["nixpkgs=flake:nixpkgs"];
+
+  # Channels are unused on this pure-flake system
+  nix.channel.enable = false;
+
+  # command-not-found queries a channel database that doesn't exist here
+  programs.command-not-found.enable = false;
+
+  # Nix-Sops - System level configuration
+  sops = {
+    defaultSopsFile = ./secrets/secrets.yaml;
+    defaultSopsFormat = "yaml";
+    age.keyFile = "/persist/sops-nix/keys.txt";
+
+    secrets.user-password = {
+      neededForUsers = true;
+    };
+
+    secrets.wallhaven-key = {
+      owner = "user";
+      mode = "0400";
+    };
+
+    secrets.ssh-key = {
+      owner = "user";
+      group = "users";
+      mode = "0600";
+      path = "/home/user/.ssh/default_ssh_25519";
+    };
+
+    secrets.github-token = {
+      owner = "user";
+      mode = "0400";
+    };
+
+    # Rendered netrc file used by the nix daemon to authenticate against GitHub
+    templates."github-netrc" = {
+      content = ''
+        machine github.com
+        login token
+        password ${config.sops.placeholder.github-token}
+      '';
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+  };
+
+  # Networking
+  networking.hostName = "nixos-framework"; # Define your hostname.
+
+  # Set your time zone.
+  time.timeZone = "America/Chicago";
+
+  # Select internationalisation properties.
+  i18n.defaultLocale = "en_US.UTF-8";
+
+  zramSwap = {
+    enable = true;
+    algorithm = "zstd";
+    memoryPercent = 50; # 50% of RAM compressed = ~100-150% effective with 2-3x compression
+    priority = 100; # Higher priority = used first
+  };
+
+  services.power-profiles-daemon.enable = true;
+  # Suspend first then hibernate when closing the lid
+  services.logind.settings.Login.HandleLidSwitch = "suspend-then-hibernate";
+  # Hibernate on power button pressed
+  services.logind.settings.Login.HandlePowerKey = "hibernate";
+  services.logind.settings.Login.HandlePowerKeyLongPress = "poweroff";
+
+  # Define time delay for hibernation
+  systemd.sleep.settings.Sleep = {
+    HibernateDelaySec = "30m";
+    SuspendState = "mem";
+  };
+
+  # Adjust permissions without creating an empty file that would break sops
+  systemd.tmpfiles.rules = [
+    "z ${config.sops.age.keyFile} 0640 root root -"
+  ];
+
+  # Use userborn for user/group management (runs as systemd service, not activation script)
+  # This fixes timing issues with impermanence - home dirs are created AFTER mounts are in place
+  # See: https://github.com/NixOS/nixpkgs/issues/6481
+  services.userborn.enable = true;
+
+  # Enable Thunderbolt support
+  services.hardware.bolt.enable = true;
+
+  # Enable Printing
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    openFirewall = true;
+  };
+  services.printing = {
+    enable = true;
+    drivers = with pkgs; [
+      cups-filters
+      cups-browsed
+    ];
+  };
+
+  # Enable virtualization/docker
+  virtualisation = {
+    libvirtd = {
+      enable = true;
+      qemu = {
+        package = pkgs.qemu_kvm;
+        runAsRoot = true;
+        swtpm.enable = true;
+      };
+    };
+
+    spiceUSBRedirection.enable = true;
+
+    docker = {
+      enable = true;
+      rootless = {
+        enable = false; # Disabled - winboat requires non-rootless Docker
+      };
+      storageDriver = "btrfs";
+    };
+  };
+  programs.virt-manager.enable = true;
+
+  # Define a user account
+  users.mutableUsers = false;
+  users.users.user = {
+    isNormalUser = true;
+    description = "User";
+    hashedPasswordFile = config.sops.secrets.user-password.path;
+    extraGroups = [
+      "docker"
+      "i2c"
+      "libvirtd"
+      "networkmanager"
+      "video"
+      "wheel"
+    ];
+    shell = pkgs.zsh;
+  };
+
+  # Claude Cowork native Linux backend
+  services.claude-cowork.enable = true;
+
+  # Enable ZSH
+  programs.zsh.enable = true;
+
+  # Enable automatic login for the user.
+  services.displayManager.autoLogin.enable = true;
+  services.displayManager.autoLogin.user = "user";
+
+  # Enable fingerprint authentication
+  services.fprintd.enable = true;
+
+  # Periodic btrfs scrub to detect and fix data corruption
+  services.btrfs.autoScrub.enable = true;
+
+  nixpkgs.config.allowUnfree = true;
+  environment.systemPackages =
+    (with pkgs; [
+      # CommandLine Utilities
+      age
+      cbonsai
+      cmatrix
+      clock-rs
+      cowsay
+      dconf2nix
+      ddcutil
+      dysk
+      fastfetch
+      figlet
+      fortune
+      glow
+      gtrash
+      lolcat
+      lsd
+      nmap
+      pipes-rs
+      pond
+      nvtopPackages.amd
+      ripgrep
+      sbctl
+      sops
+      taskwarrior3
+      timg
+      toilet
+      topgrade
+      tree
+      wget
+      wl-clipboard
+
+      # archives
+      p7zip
+      unzip
+      xz
+      zip
+
+      # Development Tools
+      alejandra
+      ansible
+      azure-cli
+      bicep
+      docker-compose
+      jq
+      nil
+      nixd
+      powershell
+      ptyxis
+      shellcheck
+      # winboat # temp: bundles EOL electron-40.10.5 (insecure); re-enable once nixpkgs bumps it
+
+      # System Utilities
+      bibata-cursors
+      bibata-cursors-translucent
+      dconf-editor
+      duplicacy
+      frog
+      fprintd
+      gnome-boxes
+      menulibre
+      oreo-cursors-plus
+      qmk
+
+      # My Apps
+      chromium
+      discord
+      discordo
+      evince
+      keymapp
+      libreoffice-fresh
+      plexamp
+      signal-desktop
+      spotify
+      teams-for-linux
+      (pkgs.wrapOBS {
+        plugins = with pkgs.obs-studio-plugins; [
+          droidcam-obs
+          obs-backgroundremoval
+          obs-gstreamer
+          obs-pipewire-audio-capture
+          obs-vaapi # optional AMD hardware acceleration
+          obs-vkcapture
+          wlrobs
+          droidcam-obs
+        ];
+      })
+
+      #Dictionary
+      aspell
+      aspellDicts.en
+      aspellDicts.en-computers
+      aspellDicts.en-science
+      hunspell
+      hunspellDicts.en_US
+    ])
+    ++ [
+      # TEMP: upstream re-published the v1.24012.9 release asset after committing its hash,
+      # so the pinned FOD hash is stale. Override with the current asset hash until upstream
+      # CI corrects it, then revert to the bare .default (a version bump will re-trip the
+      # hash mismatch and signal it's time to drop this).
+      (inputs.claude-desktop.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs (old: {
+        src = pkgs.fetchurl {
+          url = "https://github.com/patrickjaja/claude-desktop-bin/releases/download/v${old.version}/claude-desktop-${old.version}-linux.tar.gz";
+          hash = "sha256-aNSPrzIIs/7fvlCVLRh4QX/igEf2m8SZly+R+3LqXGQ=";
+        };
+      }))
+      # late-sh disabled: upstream rustc 1.95 vs pinned 1.94.1 build failure (see flake.nix).
+      # inputs.late-sh.packages.${pkgs.stdenv.hostPlatform.system}.default
+    ];
+
+  fonts.packages = with pkgs; [
+    nerd-fonts.ubuntu
+    nerd-fonts.ubuntu-mono
+    nerd-fonts.adwaita-mono
+    nerd-fonts.droid-sans-mono
+    meslo-lgs-nf
+    corefonts
+    vista-fonts
+  ];
+
+  environment.variables = {
+    GI_TYPELIB_PATH = "${pkgs.libgda5}/lib/girepository-1.0"; # For Copyous GNOME Extension (libgda6 crashes gnome-shell)
+  };
+
+  environment.sessionVariables = {
+    SOPS_AGE_KEY_FILE = config.sops.age.keyFile;
+    # Make `az bicep`/`az deployment` use the nix bicep on PATH instead of
+    # downloading its own copy into ~/.azure/bin
+    AZURE_BICEP_USE_BINARY_FROM_PATH = "true";
+  };
+
+  # Enables OBS Virtual Camera
+  programs.obs-studio.enableVirtualCamera = true;
+
+  programs.steam.enable = true;
+
+  # FW-Fanctrl
+  hardware.fw-fanctrl.enable = true;
+
+  services.fwupd.enable = true;
+
+  #DDCCI Driver Config
+  hardware.i2c.enable = true;
+  services.ddccontrol.enable = true;
+  services.udev.packages = [pkgs.ddcutil];
+
+  # Adjust PAM to have fprintd come after pam_unix
+  security.pam.services.sudo.rules.auth.unix.order =
+    config.security.pam.services.sudo.rules.auth.fprintd.order - 1;
+  security.pam.services.polkit-1.rules.auth.unix.order =
+    config.security.pam.services.polkit-1.rules.auth.fprintd.order - 1;
+
+  # Open ports in the firewall.
+  networking.firewall.allowedTCPPortRanges = [
+    # KDE Connect
+    {
+      from = 1714;
+      to = 1764;
+    }
+  ];
+  networking.firewall.allowedUDPPortRanges = [
+    # KDE Connect
+    {
+      from = 1714;
+      to = 1764;
+    }
+  ];
+
+  # Lanzaboote inherits this limit; keeps boot partition from filling up
+  boot.loader.systemd-boot.configurationLimit = 15;
+
+  # This value determines the NixOS release from which the default
+  # settings for stateful data, like file locations and database versions
+  # on your system were taken. It‘s perfectly fine and recommended to leave
+  # this value at the release version of the first install of this system.
+  # Before changing this value read the documentation for this option
+  # (e.g. man configuration.nix or on https://nixos.org/nixos/options.html).
+  system.stateVersion = "25.05"; # Did you read the comment?
+}
