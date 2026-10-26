@@ -1,0 +1,154 @@
+# NetworkManager profiles with sops-nix secrets
+# Uses nm2nix format: https://github.com/janik-haag/nm2nix
+#
+# Copy this file to network.nix and customize for your setup.
+# Generate UUIDs with: uuidgen
+# Generate WireGuard keys with: wg genkey | tee privatekey | wg pubkey > publickey
+{config, ...}: {
+  sops.secrets = {
+    # WiFi passwords - add these to your secrets.yaml
+    "HOME_WIFI_PSK" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+    "WORK_WIFI_PSK" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+    # WireGuard private key
+    "WG_PRIVATE_KEY" = {
+      owner = "root";
+      group = "root";
+      mode = "0400";
+    };
+  };
+
+  networking.networkmanager = {
+    enable = true;
+    ensureProfiles = {
+      environmentFiles = [
+        config.sops.secrets.HOME_WIFI_PSK.path
+        config.sops.secrets.WORK_WIFI_PSK.path
+        config.sops.secrets.WG_PRIVATE_KEY.path
+      ];
+
+      profiles = {
+        # WiFi network 1
+        HomeWifi = {
+          connection = {
+            id = "HomeWifi";
+            interface-name = "wlp1s0";
+            type = "wifi";
+            uuid = "00000000-0000-0000-0000-000000000001";
+          };
+          ipv4 = {
+            method = "auto";
+          };
+          ipv6 = {
+            addr-gen-mode = "default";
+            method = "auto";
+          };
+          proxy = {};
+          wifi = {
+            mode = "infrastructure";
+            ssid = "YourHomeSSID";
+          };
+          wifi-security = {
+            auth-alg = "open";
+            key-mgmt = "wpa-psk";
+            psk = "$HOME_WIFI_PSK";
+          };
+        };
+
+        # WiFi network 2
+        WorkWifi = {
+          connection = {
+            id = "WorkWifi";
+            interface-name = "wlp1s0";
+            type = "wifi";
+            uuid = "00000000-0000-0000-0000-000000000002";
+          };
+          ipv4 = {
+            method = "auto";
+          };
+          ipv6 = {
+            addr-gen-mode = "default";
+            method = "auto";
+          };
+          proxy = {};
+          wifi = {
+            mode = "infrastructure";
+            ssid = "YourWorkSSID";
+          };
+          wifi-security = {
+            auth-alg = "open";
+            key-mgmt = "wpa-psk";
+            psk = "$WORK_WIFI_PSK";
+          };
+        };
+
+        # WireGuard VPN with IPv4 and IPv6
+        MyVPN = {
+          connection = {
+            autoconnect = "false";
+            id = "MyVPN";
+            interface-name = "MyVPN";
+            permissions = "user:user:;";
+            type = "wireguard";
+            uuid = "00000000-0000-0000-0000-000000000003";
+          };
+          ipv4 = {
+            address1 = "10.0.0.2/32";
+            dns = "10.0.0.1;";
+            dns-search = "~;";
+            method = "manual";
+          };
+          ipv6 = {
+            addr-gen-mode = "default";
+            address1 = "fd00::2/128";
+            dns = "fd00::1;";
+            dns-search = "~;";
+            method = "manual";
+          };
+          proxy = {};
+          wireguard = {
+            listen-port = "51820";
+            private-key = "$WG_PRIVATE_KEY";
+          };
+          "wireguard-peer.YOUR_SERVER_PUBLIC_KEY_HERE=" = {
+            allowed-ips = "0.0.0.0/0;::/0;";
+            endpoint = "vpn.example.com:51820";
+          };
+        };
+
+        # VLAN example
+        ManagementVLAN = {
+          connection = {
+            autoconnect = "false";
+            id = "ManagementVLAN";
+            interface-name = "eth0.10";
+            permissions = "user:user:;";
+            type = "vlan";
+            uuid = "00000000-0000-0000-0000-000000000004";
+          };
+          ethernet = {};
+          ipv4 = {
+            method = "auto";
+          };
+          ipv6 = {
+            addr-gen-mode = "default";
+            method = "auto";
+          };
+          proxy = {};
+          vlan = {
+            flags = "1";
+            id = "10";
+            parent = "eth0";
+          };
+        };
+      };
+    };
+  };
+}

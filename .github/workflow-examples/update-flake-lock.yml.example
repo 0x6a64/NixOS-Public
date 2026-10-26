@@ -1,0 +1,70 @@
+name: Update flake.lock
+
+on:
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-flake-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet flake.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate flake
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          # Fail (no PR) if the system no longer evaluates, e.g. a package removed upstream
+          nix eval --raw .#nixosConfigurations.nixos-framework.config.system.build.toplevel.drvPath
+
+      - name: Create Pull Request
+        if: steps.check_changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update flake.lock"
+          title: "chore: automated flake.lock update"
+          body: |
+            ## Automated flake.lock update
+
+            This PR was automatically created by the GitHub Actions workflow.
+
+            ### Changes
+            - Updated `flake.lock` with latest input versions
+
+            ### Checklist
+            - [ ] Review the flake.lock diff for unexpected changes
+            - [ ] Test locally with `nixos-rebuild build --flake .`
+            - [ ] Merge when ready
+
+            ---
+            *This PR was created automatically by the [update-flake-lock](.github/workflows/update-flake-lock.yml) workflow.*
+          branch: automated/update-flake-lock
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
